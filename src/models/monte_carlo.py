@@ -1,13 +1,4 @@
-"""
-Monte Carlo Simulation Module
-------------------------------
-Runs thousands of DCF scenarios with randomized assumptions
-to produce a probability distribution of intrinsic value.
-
-This is how professional analysts think about valuation uncertainty —
-not "the stock is worth $111" but "there's a 70% probability
-the stock is worth between $80 and $160."
-"""
+# Monte Carlo Simulation Module
 
 import numpy as np
 import pandas as pd
@@ -18,40 +9,23 @@ from src.models.dcf import DCFModel, DCFAssumptions
 
 @dataclass
 class SimulationConfig:
-    """
-    Defines the probability distributions for each assumption.
-    Each input is modeled as a normal distribution:
-    mean = our base case, std = how uncertain we are.
-    """
+    
     n_simulations:      int   = 10000  # Number of scenarios to run
 
-    # Revenue growth: mean 8%, std 3% — could be anywhere from 2% to 14%
     growth_mean:        float = 0.08
     growth_std:         float = 0.03
 
-    # WACC: mean 10%, std 1.5%
     wacc_mean:          float = 0.10
     wacc_std:           float = 0.015
 
-    # Terminal growth: mean 3%, std 0.5%
     terminal_mean:      float = 0.03
     terminal_std:       float = 0.005
 
-    # FCF margin variation: std 2%
     fcf_margin_std:     float = 0.02
 
 
 class MonteCarloSimulator:
-    """
-    Runs Monte Carlo simulation on DCF model.
-
-    Each simulation:
-    1. Randomly samples growth rate, WACC, terminal growth
-    2. Runs full DCF model with those assumptions
-    3. Records the intrinsic value output
-
-    After 10,000 runs, we have a distribution of possible values.
-    """
+    
 
     def __init__(self, financial_data: dict, config: SimulationConfig = None):
         self.data    = financial_data
@@ -64,11 +38,8 @@ class MonteCarloSimulator:
         wacc_override:  float,
         terminal_growth: float
     ) -> float:
-        """
-        Run one DCF scenario with given assumptions.
-
-        Returns intrinsic value per share, or NaN if calculation fails.
-        """
+        
+        
         try:
             assumptions = DCFAssumptions(
                 projection_years = 5,
@@ -81,12 +52,12 @@ class MonteCarloSimulator:
             model   = DCFModel(self.data, assumptions)
             results = model.calculate_intrinsic_value()
 
-            # Override WACC with our simulated value
+            
             wacc = max(0.05, wacc_override)  # Floor at 5%
             if wacc <= assumptions.terminal_growth:
                 return np.nan
 
-            # Recalculate with overridden WACC
+
             base_fcf   = results["base_fcf"]
             total_debt = results["total_debt"]
             cash       = results["cash"]
@@ -106,16 +77,10 @@ class MonteCarloSimulator:
             return np.nan
 
     def run(self) -> pd.DataFrame:
-        """
-        Run all simulations and return results as a DataFrame.
-
-        Returns:
-            DataFrame with columns: growth_rate, wacc, terminal_growth, intrinsic_value
-        """
+        
         cfg = self.config
         print(f"\nRunning {cfg.n_simulations:,} Monte Carlo simulations...")
 
-        # Sample all random inputs at once (much faster than one-by-one)
         np.random.seed(42)  # For reproducibility
         growth_samples   = np.random.normal(cfg.growth_mean,   cfg.growth_std,   cfg.n_simulations)
         wacc_samples     = np.random.normal(cfg.wacc_mean,     cfg.wacc_std,     cfg.n_simulations)
@@ -145,12 +110,7 @@ class MonteCarloSimulator:
         return self.results
 
     def get_statistics(self) -> dict:
-        """
-        Summarize the simulation results into key statistics.
-
-        Returns:
-            Dictionary with percentiles, mean, std, and probability metrics
-        """
+        
         if self.results is None or len(self.results) == 0:
             raise ValueError("Run simulations first with .run()")
 
@@ -174,7 +134,7 @@ class MonteCarloSimulator:
         return stats
 
     def print_summary(self):
-        """Print a clean Monte Carlo summary."""
+        
         stats = self.get_statistics()
         ticker = self.data["overview"]["ticker"]
         name   = self.data["overview"]["name"]
@@ -203,7 +163,7 @@ class MonteCarloSimulator:
         print(f"{'='*55}\n")
 
 
-# ── Test directly ──
+# Test directly 
 if __name__ == "__main__":
     import sys
     sys.path.append(".")

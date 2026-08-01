@@ -1,8 +1,4 @@
-"""
-DCF Model Module
-----------------
-Discounted Cash Flow valuation model.
-"""
+# DCF Model Module
 
 import numpy as np
 import pandas as pd

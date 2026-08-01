@@ -1,9 +1,4 @@
-"""
-Valuation Engine — Professional Dashboard
-------------------------------------------
-Dark slate UI with teal and amber accents.
-Clean, data-dense, professional.
-"""
+# Valuation Engine — Streamlit dashboard
 
 import sys
 sys.path.append(".")
@@ -273,7 +268,7 @@ def chart_layout(height=320, show_legend=True):
     )
 
 
-# ── Sidebar ──
+# Sidebar 
 with st.sidebar:
     st.markdown("""
     <div style='padding: 0.5rem 0 1.5rem; border-bottom: 1px solid rgba(255,255,255,0.06); margin-bottom: 1.5rem;'>
@@ -337,7 +332,7 @@ with st.sidebar:
     run_button = st.button("Run Analysis", use_container_width=True)
 
 
-# ── Landing state ──
+# Landing state
 if not run_button:
     st.markdown("""
     <div style='padding: 4rem 0 2rem;'>
@@ -360,7 +355,7 @@ if not run_button:
     st.stop()
 
 
-# ── Fetch data ──
+# Fetch data 
 with st.spinner(f"Fetching live data for {ticker}..."):
     try:
         fetcher  = FinancialDataFetcher(ticker)
@@ -374,7 +369,7 @@ with st.spinner(f"Fetching live data for {ticker}..."):
         st.stop()
 
 
-# ── Run DCF ──
+# Run DCF 
 assumptions = DCFAssumptions(
     projection_years = 5,
     revenue_growth   = revenue_growth,
@@ -386,7 +381,7 @@ model   = DCFModel(data, assumptions)
 results = model.calculate_intrinsic_value()
 
 
-# ── Company header ──
+# Company header
 col_name, col_verdict = st.columns([3, 1])
 with col_name:
     st.markdown(f"""
@@ -404,7 +399,7 @@ with col_verdict:
 st.markdown("<div style='height:1.25rem'></div>", unsafe_allow_html=True)
 
 
-# ── Metrics row ──
+# Metrics row 
 m1, m2, m3, m4, m5 = st.columns(5)
 with m1:
     st.metric("Current Price", f"${overview['current_price']:.2f}")
@@ -423,7 +418,7 @@ with m5:
 st.markdown("<div style='height:1.5rem'></div>", unsafe_allow_html=True)
 
 
-# ── Charts row 1 ──
+# Charts row 1 
 col_wf, col_fcf = st.columns(2)
 
 with col_wf:
@@ -480,7 +475,7 @@ with col_fcf:
     st.plotly_chart(fig_fcf, use_container_width=True)
 
 
-# ── Monte Carlo ──
+# Monte Carlo
 st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
 st.markdown("<div class='section-label'>Monte Carlo simulation</div>", unsafe_allow_html=True)
 
@@ -554,7 +549,7 @@ with col_mc:
     """, unsafe_allow_html=True)
 
 
-# ── Sensitivity ──
+# Sensitivity
 st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
 st.markdown("<div class='section-label'>Sensitivity analysis — intrinsic value per share</div>",
             unsafe_allow_html=True)
@@ -583,7 +578,7 @@ st.dataframe(
 st.caption("Teal = above current price  ·  Amber = within 10%  ·  Red = below current price")
 
 
-# ── Footer ──
+# Footer 
 st.markdown(f"""
 <div class='footer-bar'>
     <span>Built by Himaja Kavuri · MS Analytics, USC ·
