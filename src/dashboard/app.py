@@ -10,7 +10,7 @@ import numpy as np
 from src.data.fetcher import FinancialDataFetcher
 from src.models.dcf import DCFModel, DCFAssumptions
 from src.models.monte_carlo import MonteCarloSimulator, SimulationConfig
-
+from ai_analyst import get_ai_analysis
 st.set_page_config(
     page_title="Valuation Engine",
     page_icon="📊",
@@ -577,16 +577,56 @@ st.dataframe(
 )
 st.caption("Teal = above current price  ·  Amber = within 10%  ·  Red = below current price")
 
+from ai_analyst import get_ai_analysis
 
-# Footer 
-st.markdown(f"""
-<div class='footer-bar'>
-    <span>Built by Himaja Kavuri · MS Analytics, USC ·
-    <a href='https://himajakavuri23.github.io' target='_blank'
-       style='color:#2DD4BF;text-decoration:none'>Portfolio</a> ·
-    <a href='https://linkedin.com/in/himaja-kavuri' target='_blank'
-       style='color:#2DD4BF;text-decoration:none'>LinkedIn</a>
-    </span>
-    <span>ValuationEngine v1.0 · Data via Yahoo Finance</span>
-</div>
-""", unsafe_allow_html=True)
+# Initialize session state
+if "ai_summary" not in st.session_state:
+    st.session_state.ai_summary = ""
+if "ai_answer" not in st.session_state:
+    st.session_state.ai_answer = ""
+if "last_question" not in st.session_state:
+    st.session_state.last_question = ""
+
+# AI Financial Analyst section
+st.subheader("AI Financial Analyst")
+
+# Financial institution guardrail
+FINANCIAL_SECTORS = ['Financial Services', 'Banking', 'Insurance', 'Financial']
+is_financial = any(s.lower() in overview.get('sector', '').lower() for s in FINANCIAL_SECTORS)
+
+if is_financial:
+    st.warning("""
+    **Valuation Limitation Notice**
+    
+    Traditional FCFF DCF valuation may not provide meaningful results for financial institutions 
+    due to their capital structure. Debt is an operating input for banks, not purely a financing choice, 
+    which causes standard DCF frameworks to produce unreliable equity value estimates.
+    
+    An alternative methodology such as Dividend Discount Model (DDM), Price-to-Book, or 
+    Residual Income Model is recommended for this company type.
+    """)
+else:
+    if st.button("Generate Executive Summary", key="ai_summary_btn"):
+        with st.spinner("Retrieving SEC filing and analyzing valuation..."):
+            st.session_state.ai_summary = get_ai_analysis(
+                results, ticker=ticker, user_question=None
+            )
+
+    if st.session_state.ai_summary:
+        st.markdown(st.session_state.ai_summary.replace("$", "\\$"))
+
+# Question box always visible regardless of sector
+user_question = st.text_input(
+    "Ask a question about this valuation:",
+    key="question_input"
+)
+
+if user_question and user_question != st.session_state.last_question:
+    st.session_state.last_question = user_question
+    with st.spinner("Thinking..."):
+        st.session_state.ai_answer = get_ai_analysis(
+            results, ticker=ticker, user_question=user_question
+        )
+
+if st.session_state.get("ai_answer", ""):
+    st.markdown(st.session_state.ai_answer.replace("$", "\\$"))
