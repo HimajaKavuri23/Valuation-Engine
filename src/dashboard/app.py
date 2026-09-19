@@ -1,4 +1,4 @@
-# Valuation Engine — Streamlit dashboard
+# IntrinsicIQ — Streamlit dashboard
 
 import sys
 sys.path.append(".")
@@ -12,7 +12,7 @@ from src.models.dcf import DCFModel, DCFAssumptions
 from src.models.monte_carlo import MonteCarloSimulator, SimulationConfig
 from ai_analyst import get_ai_analysis
 st.set_page_config(
-    page_title="Valuation Engine",
+    page_title="IntrinsicIQ",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -337,11 +337,10 @@ if not run_button:
     st.markdown("""
     <div style='padding: 4rem 0 2rem;'>
         <div style='font-family: DM Serif Display, serif; font-size: 2.8rem; color: #E8EAF0; letter-spacing: -0.03em; line-height: 1.1; max-width: 600px;'>
-            Intelligent financial<br>valuation engine
+            IntrinsicIQ
         </div>
         <div style='font-size: 0.88rem; color: #6B7280; line-height: 1.8; max-width: 500px; margin-top: 1.25rem;'>
-            DCF modeling, Monte Carlo simulation, and sensitivity analysis
-            for any US public company. Enter a ticker and run the analysis.
+            Fundamental equity valuation for any US-listed company.<br>DCF · Residual Income · Monte Carlo · SEC Filing Analysis
         </div>
         <div style='margin-top: 2rem; display: flex; gap: 0.75rem; flex-wrap: wrap;'>
             <span style='font-family: Inter; font-size: 0.65rem; letter-spacing: 0.1em; text-transform: uppercase; padding: 0.3rem 0.85rem; border-radius: 100px; border: 1px solid rgba(255,255,255,0.1); color: #9CA3AF;'>Try AAPL</span>
