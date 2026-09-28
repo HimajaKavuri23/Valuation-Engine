@@ -377,7 +377,6 @@ with st.spinner(f"Fetching live data for {ticker}..."):
 
 
 # Classify company and route to appropriate valuation model
-# Classify company and route to appropriate valuation model
 FINANCIAL_SECTORS = ['Financial Services', 'Banking', 'Insurance', 'Financial']
 REIT_INDUSTRIES = ['REIT', 'Real Estate Investment Trust']
 
@@ -385,6 +384,16 @@ is_financial = any(s.lower() in overview.get('sector', '').lower() for s in FINA
 is_reit = (overview.get('sector', '') == 'Real Estate' and 
            any(r.lower() in overview.get('industry', '').lower() for r in REIT_INDUSTRIES))
 
+# Detect negative/unstable FCF
+def is_negative_fcf(fcf_series) -> bool:
+    if fcf_series is None or fcf_series.empty:
+        return False
+    recent = fcf_series.dropna().iloc[:3]
+    negative_count = (recent < 0).sum()
+    return negative_count >= 2
+
+is_unstable_fcf = (not is_reit and not is_financial and 
+                   is_negative_fcf(data.get("fcf")))
 if is_reit:
     from src.models.reit_valuation import REITValuationModel, REITAssumptions
     data['current_price'] = overview.get('current_price', 0)
@@ -408,6 +417,16 @@ elif is_financial:
     rim_model = ResidualIncomeModel(data, rim_assumptions)
     results = rim_model.calculate()
     valuation_method = "Residual Income Model"
+
+elif is_unstable_fcf:
+    from src.models.relative_valuation import RelativeValuationModel
+    data['current_price'] = overview.get('current_price', 0)
+    data['shares_outstanding'] = fetcher.stock.info.get('sharesOutstanding', 1)
+    data['sector'] = overview.get('sector', 'Technology')
+    rel_model = RelativeValuationModel(data)
+    results = rel_model.calculate()
+    valuation_method = "Relative Valuation"
+
 else:
     assumptions = DCFAssumptions(
         projection_years=5,
@@ -449,15 +468,19 @@ with m2:
 with m3:
     st.metric("Market Cap", f"${overview['market_cap']/1e9:.1f}B")
 with m4:
-    if valuation_method == "Residual Income Model":
+    if valuation_method in ["Residual Income Model", "FFO/AFFO Valuation"]:
         st.metric("Cost of Equity", f"{results['cost_of_equity']:.1f}%")
-    elif valuation_method == "FFO/AFFO Valuation":
-        st.metric("Cost of Equity", f"{results['cost_of_equity']:.1f}%")
+    elif valuation_method == "Relative Valuation":
+        st.metric("EV/Revenue", f"{results['current_ev_revenue']:.1f}x")
     else:
         st.metric("WACC", f"{results['wacc']:.2%}")
 with m5:
     if valuation_method == "Residual Income Model":
         st.metric("ROE", f"{results['current_roe']:.1f}%")
+    elif valuation_method == "FFO/AFFO Valuation":
+        st.metric("FFO/Share", f"${results['ffo_per_share']:.2f}")
+    elif valuation_method == "Relative Valuation":
+        st.metric("Industry EV/Rev", f"{results['industry_ev_revenue']:.1f}x")
     else:
         fcf = data["fcf"]
         fcf_val = fcf.dropna().iloc[0] if not fcf.empty else 0
@@ -493,6 +516,7 @@ with col_wf:
         fig_wf.update_layout(**chart_layout(height=300, show_legend=False))
         fig_wf.update_yaxes(tickformat="$,.0f")
         st.plotly_chart(fig_wf, use_container_width=True)
+
     elif valuation_method == "FFO/AFFO Valuation":
         st.markdown("<div class='section-label'>FFO/AFFO breakdown</div>", unsafe_allow_html=True)
         labels = ["FFO/Share", "Maintenance CapEx", "AFFO/Share"]
@@ -515,6 +539,31 @@ with col_wf:
         fig_wf.update_layout(**chart_layout(height=300, show_legend=False))
         fig_wf.update_yaxes(tickformat="$,.2f")
         st.plotly_chart(fig_wf, use_container_width=True)
+
+    elif valuation_method == "Relative Valuation":
+        st.markdown("<div class='section-label'>Relative Valuation breakdown</div>", unsafe_allow_html=True)
+        labels = ["Industry EV/Rev", "Risk Discount", "Adj EV/Rev", "Intrinsic Value"]
+        values = [
+            results["industry_ev_revenue"],
+            -(results["industry_ev_revenue"] - results["adj_ev_revenue"]),
+            results["adj_ev_revenue"],
+            results["intrinsic_value"] / (results["revenue"] / results["shares"]) if results["revenue"] > 0 else 0
+        ]
+        measures = ["absolute", "relative", "relative", "total"]
+        fig_wf = go.Figure(go.Waterfall(
+            orientation="v",
+            measure=measures,
+            x=labels,
+            y=values,
+            connector={"line": {"color": "rgba(255,255,255,0.08)", "width": 1}},
+            increasing={"marker": {"color": TEAL}},
+            decreasing={"marker": {"color": RED}},
+            totals={"marker": {"color": INDIGO}},
+        ))
+        fig_wf.update_layout(**chart_layout(height=300, show_legend=False))
+        fig_wf.update_yaxes(tickformat=".1f", title_text="Multiple")
+        st.plotly_chart(fig_wf, use_container_width=True) 
+
     else:
         st.markdown("<div class='section-label'>DCF value breakdown</div>", unsafe_allow_html=True)
         pv_fcfs = results["pv_fcfs"]
@@ -562,6 +611,18 @@ with col_fcf:
         fig_ffo.update_layout(**chart_layout(height=300, show_legend=False))
         fig_ffo.update_yaxes(tickformat="$,.2f")
         st.plotly_chart(fig_ffo, use_container_width=True)
+    elif valuation_method == "Relative Valuation":
+        st.markdown("<div class='section-label'>EV/Revenue — Current vs Industry</div>", unsafe_allow_html=True)
+        fig_rv = go.Figure()
+        fig_rv.add_trace(go.Bar(
+            x=["Current EV/Rev", "Industry Median", "Adjusted (w/ Discount)"],
+            y=[results["current_ev_revenue"], results["industry_ev_revenue"], results["adj_ev_revenue"]],
+            marker=dict(color=[RED, INDIGO, TEAL], opacity=0.8),
+        ))
+        fig_rv.update_layout(**chart_layout(height=300, show_legend=False))
+        fig_rv.update_yaxes(tickformat=".1f", title_text="Multiple")
+        st.plotly_chart(fig_rv, use_container_width=True)
+
     else:
         st.markdown("<div class='section-label'>Free cash flow — historical vs projected</div>",
                     unsafe_allow_html=True)
@@ -675,7 +736,7 @@ else:
             st.metric("Current ROE", f"{results['current_roe']:.1f}%")
         with col3:
             st.metric("Excess Return (ROE minus COE)", f"{results['excess_return']:.1f}%")
-    else:
+    elif valuation_method == "FFO/AFFO Valuation":
         st.markdown("<div class='section-label'>FFO/AFFO Valuation — Key Metrics</div>",
                     unsafe_allow_html=True)
         col1, col2, col3 = st.columns(3)
@@ -685,7 +746,17 @@ else:
             st.metric("AFFO Per Share", f"${results['affo_per_share']:.2f}")
         with col3:
             st.metric("Price/FFO", f"{results['price_to_ffo']:.1f}x")
-
+    else:
+        st.markdown("<div class='section-label'>Relative Valuation — Key Metrics</div>",
+                    unsafe_allow_html=True)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Current EV/Revenue", f"{results['current_ev_revenue']:.1f}x")
+        with col2:
+            st.metric("Industry EV/Revenue", f"{results['industry_ev_revenue']:.1f}x")
+        with col3:
+            ev_ebitda = results.get('current_ev_ebitda')
+            st.metric("EV/EBITDA", f"{ev_ebitda:.1f}x" if ev_ebitda else "N/A (neg EBITDA)")
 
 # Sensitivity
 st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
@@ -760,12 +831,14 @@ else:
         st.markdown(st.session_state.ai_summary.replace("$", "\\$"))
 
 # Question box always visible regardless of sector
-user_question = st.text_input(
-    "Ask a question about this valuation:",
-    key="question_input"
-)
+with st.form("question_form", clear_on_submit=False):
+    user_question = st.text_input(
+        "Ask a question about this valuation:",
+        key="question_input"
+    )
+    submitted = st.form_submit_button("Ask", use_container_width=True)
 
-if user_question and user_question != st.session_state.last_question:
+if submitted and user_question and user_question != st.session_state.last_question:
     st.session_state.last_question = user_question
     with st.spinner("Thinking..."):
         st.session_state.ai_answer = get_ai_analysis(
