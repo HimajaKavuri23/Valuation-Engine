@@ -360,6 +360,14 @@ with st.spinner(f"Fetching live data for {ticker}..."):
         fetcher  = FinancialDataFetcher(ticker)
         data     = fetcher.get_all_financials()
         overview = data["overview"]
+
+        # Clear AI responses when ticker changes
+        if st.session_state.get("last_ticker") != ticker:
+            st.session_state.ai_summary = ""
+            st.session_state.ai_answer = ""
+            st.session_state.last_question = ""
+            st.session_state.last_ticker = ticker
+
         if overview["name"] == "N/A":
             st.error(f"No data found for '{ticker}'. Please check the ticker symbol.")
             st.stop()
@@ -368,16 +376,49 @@ with st.spinner(f"Fetching live data for {ticker}..."):
         st.stop()
 
 
-# Run DCF 
-assumptions = DCFAssumptions(
-    projection_years = 5,
-    revenue_growth   = revenue_growth,
-    terminal_growth  = terminal_growth,
-    risk_free_rate   = risk_free_rate,
-    equity_risk_prem = equity_risk_prem,
-)
-model   = DCFModel(data, assumptions)
-results = model.calculate_intrinsic_value()
+# Classify company and route to appropriate valuation model
+# Classify company and route to appropriate valuation model
+FINANCIAL_SECTORS = ['Financial Services', 'Banking', 'Insurance', 'Financial']
+REIT_INDUSTRIES = ['REIT', 'Real Estate Investment Trust']
+
+is_financial = any(s.lower() in overview.get('sector', '').lower() for s in FINANCIAL_SECTORS)
+is_reit = (overview.get('sector', '') == 'Real Estate' and 
+           any(r.lower() in overview.get('industry', '').lower() for r in REIT_INDUSTRIES))
+
+if is_reit:
+    from src.models.reit_valuation import REITValuationModel, REITAssumptions
+    data['current_price'] = overview.get('current_price', 0)
+    data['shares_outstanding'] = fetcher.stock.info.get('sharesOutstanding', 1)
+    reit_assumptions = REITAssumptions(
+        cost_of_equity=risk_free_rate + equity_risk_prem * 0.5,
+        growth_rate=terminal_growth,
+    )
+    reit_model = REITValuationModel(data, reit_assumptions)
+    results = reit_model.calculate()
+    valuation_method = "FFO/AFFO Valuation"
+elif is_financial:
+    from src.models.residual_income import ResidualIncomeModel, RIMAssumptions
+    data['current_price'] = overview.get('current_price', 0)
+    data['shares_outstanding'] = fetcher.stock.info.get('sharesOutstanding', 1)
+    rim_assumptions = RIMAssumptions(
+        cost_of_equity=risk_free_rate + equity_risk_prem * 0.5,
+        fade_years=5,
+        terminal_growth=terminal_growth,
+    )
+    rim_model = ResidualIncomeModel(data, rim_assumptions)
+    results = rim_model.calculate()
+    valuation_method = "Residual Income Model"
+else:
+    assumptions = DCFAssumptions(
+        projection_years=5,
+        revenue_growth=revenue_growth,
+        terminal_growth=terminal_growth,
+        risk_free_rate=risk_free_rate,
+        equity_risk_prem=equity_risk_prem,
+    )
+    model = DCFModel(data, assumptions)
+    results = model.calculate_intrinsic_value()
+    valuation_method = "DCF"
 
 
 # Company header
@@ -408,11 +449,19 @@ with m2:
 with m3:
     st.metric("Market Cap", f"${overview['market_cap']/1e9:.1f}B")
 with m4:
-    st.metric("WACC", f"{results['wacc']:.2%}")
+    if valuation_method == "Residual Income Model":
+        st.metric("Cost of Equity", f"{results['cost_of_equity']:.1f}%")
+    elif valuation_method == "FFO/AFFO Valuation":
+        st.metric("Cost of Equity", f"{results['cost_of_equity']:.1f}%")
+    else:
+        st.metric("WACC", f"{results['wacc']:.2%}")
 with m5:
-    fcf = data["fcf"]
-    fcf_val = fcf.dropna().iloc[0] if not fcf.empty else 0
-    st.metric("Latest FCF", f"${fcf_val/1e9:.1f}B")
+    if valuation_method == "Residual Income Model":
+        st.metric("ROE", f"{results['current_roe']:.1f}%")
+    else:
+        fcf = data["fcf"]
+        fcf_val = fcf.dropna().iloc[0] if not fcf.empty else 0
+        st.metric("Latest FCF", f"${fcf_val/1e9:.1f}B")
 
 st.markdown("<div style='height:1.5rem'></div>", unsafe_allow_html=True)
 
@@ -421,131 +470,221 @@ st.markdown("<div style='height:1.5rem'></div>", unsafe_allow_html=True)
 col_wf, col_fcf = st.columns(2)
 
 with col_wf:
-    st.markdown("<div class='section-label'>DCF value breakdown</div>", unsafe_allow_html=True)
-    pv_fcfs  = results["pv_fcfs"]
-    pv_term  = results["pv_terminal"]
-    debt     = results["total_debt"]
-    cash     = results["cash"]
-
-    labels   = [f"FCF Yr {i+1}" for i in range(len(pv_fcfs))] + \
-               ["Terminal Value", "Less Debt", "Plus Cash", "Equity Value"]
-    values   = pv_fcfs + [pv_term, -debt, cash, results["equity_value"]]
-    measures = ["relative"] * (len(pv_fcfs) + 2) + ["relative", "total"]
-
-    fig_wf = go.Figure(go.Waterfall(
-        orientation="v",
-        measure=measures,
-        x=labels,
-        y=values,
-        connector={"line": {"color": "rgba(255,255,255,0.08)", "width": 1}},
-        increasing={"marker": {"color": TEAL}},
-        decreasing={"marker": {"color": RED}},
-        totals={"marker": {"color": INDIGO}},
-    ))
-    fig_wf.update_layout(**chart_layout(height=300, show_legend=False))
-    fig_wf.update_yaxes(tickformat="$,.0f")
-    st.plotly_chart(fig_wf, use_container_width=True)
+    if valuation_method == "Residual Income Model":
+        st.markdown("<div class='section-label'>Residual Income breakdown</div>", unsafe_allow_html=True)
+        labels = ["Book Value", "PV Residual Income", "PV Terminal", "Intrinsic Value"]
+        values = [
+            results["book_value_per_share"],
+            results["pv_residual_income"],
+            results["pv_terminal"],
+            results["intrinsic_value"]
+        ]
+        measures = ["absolute", "relative", "relative", "total"]
+        fig_wf = go.Figure(go.Waterfall(
+            orientation="v",
+            measure=measures,
+            x=labels,
+            y=values,
+            connector={"line": {"color": "rgba(255,255,255,0.08)", "width": 1}},
+            increasing={"marker": {"color": TEAL}},
+            decreasing={"marker": {"color": RED}},
+            totals={"marker": {"color": INDIGO}},
+        ))
+        fig_wf.update_layout(**chart_layout(height=300, show_legend=False))
+        fig_wf.update_yaxes(tickformat="$,.0f")
+        st.plotly_chart(fig_wf, use_container_width=True)
+    elif valuation_method == "FFO/AFFO Valuation":
+        st.markdown("<div class='section-label'>FFO/AFFO breakdown</div>", unsafe_allow_html=True)
+        labels = ["FFO/Share", "Maintenance CapEx", "AFFO/Share"]
+        values = [
+            results["ffo_per_share"],
+            -(results["ffo_per_share"] - results["affo_per_share"]),
+            results["affo_per_share"]
+        ]
+        measures = ["absolute", "relative", "total"]
+        fig_wf = go.Figure(go.Waterfall(
+            orientation="v",
+            measure=measures,
+            x=labels,
+            y=values,
+            connector={"line": {"color": "rgba(255,255,255,0.08)", "width": 1}},
+            increasing={"marker": {"color": TEAL}},
+            decreasing={"marker": {"color": RED}},
+            totals={"marker": {"color": INDIGO}},
+        ))
+        fig_wf.update_layout(**chart_layout(height=300, show_legend=False))
+        fig_wf.update_yaxes(tickformat="$,.2f")
+        st.plotly_chart(fig_wf, use_container_width=True)
+    else:
+        st.markdown("<div class='section-label'>DCF value breakdown</div>", unsafe_allow_html=True)
+        pv_fcfs = results["pv_fcfs"]
+        pv_term = results["pv_terminal"]
+        debt = results["total_debt"]
+        cash = results["cash"]
+        labels = [f"FCF Yr {i+1}" for i in range(len(pv_fcfs))] + \
+                 ["Terminal Value", "Less Debt", "Plus Cash", "Equity Value"]
+        values = pv_fcfs + [pv_term, -debt, cash, results["equity_value"]]
+        measures = ["relative"] * (len(pv_fcfs) + 2) + ["relative", "total"]
+        fig_wf = go.Figure(go.Waterfall(
+            orientation="v",
+            measure=measures,
+            x=labels,
+            y=values,
+            connector={"line": {"color": "rgba(255,255,255,0.08)", "width": 1}},
+            increasing={"marker": {"color": TEAL}},
+            decreasing={"marker": {"color": RED}},
+            totals={"marker": {"color": INDIGO}},
+        ))
+        fig_wf.update_layout(**chart_layout(height=300, show_legend=False))
+        fig_wf.update_yaxes(tickformat="$,.0f")
+        st.plotly_chart(fig_wf, use_container_width=True)
 
 with col_fcf:
-    st.markdown("<div class='section-label'>Free cash flow — historical vs projected</div>",
-                unsafe_allow_html=True)
-    hist_fcf   = data["fcf"].dropna()
-    hist_years = [str(d.year) for d in hist_fcf.index[:4]][::-1]
-    hist_vals  = list(hist_fcf.values[:4])[::-1]
-    proj_years = [f"Yr {i+1}" for i in range(5)]
-    proj_vals  = results["projected_fcfs"]
-
-    fig_fcf = go.Figure()
-    fig_fcf.add_trace(go.Bar(
-        x=hist_years, y=hist_vals,
-        name="Historical",
-        marker=dict(color=INDIGO, opacity=0.7),
-    ))
-    fig_fcf.add_trace(go.Bar(
-        x=proj_years, y=proj_vals,
-        name="Projected",
-        marker=dict(
-            color=AMBER, opacity=0.75,
-            pattern=dict(shape="/", fgcolor="rgba(251,176,36,0.3)")
-        ),
-    ))
-    fig_fcf.update_layout(**chart_layout(height=300))
-    fig_fcf.update_yaxes(tickformat="$,.0f")
-    st.plotly_chart(fig_fcf, use_container_width=True)
+    if valuation_method == "Residual Income Model":
+        st.markdown("<div class='section-label'>ROE vs Cost of Equity</div>", unsafe_allow_html=True)
+        fig_roe = go.Figure()
+        fig_roe.add_trace(go.Bar(
+            x=["Current ROE", "Cost of Equity", "Excess Return"],
+            y=[results["current_roe"], results["cost_of_equity"], results["excess_return"]],
+            marker=dict(color=[TEAL, INDIGO, AMBER]),
+        ))
+        fig_roe.update_layout(**chart_layout(height=300, show_legend=False))
+        fig_roe.update_yaxes(tickformat=".1f", title_text="%")
+        st.plotly_chart(fig_roe, use_container_width=True)
+    elif valuation_method == "FFO/AFFO Valuation":
+        st.markdown("<div class='section-label'>Projected FFO per share</div>", unsafe_allow_html=True)
+        fig_ffo = go.Figure()
+        fig_ffo.add_trace(go.Bar(
+            x=[f"Yr {i+1}" for i in range(len(results["projected_ffo_per_share"]))],
+            y=results["projected_ffo_per_share"],
+            marker=dict(color=TEAL, opacity=0.75),
+        ))
+        fig_ffo.update_layout(**chart_layout(height=300, show_legend=False))
+        fig_ffo.update_yaxes(tickformat="$,.2f")
+        st.plotly_chart(fig_ffo, use_container_width=True)
+    else:
+        st.markdown("<div class='section-label'>Free cash flow — historical vs projected</div>",
+                    unsafe_allow_html=True)
+        hist_fcf = data["fcf"].dropna()
+        hist_years = [str(d.year) for d in hist_fcf.index[:4]][::-1]
+        hist_vals = list(hist_fcf.values[:4])[::-1]
+        proj_years = [f"Yr {i+1}" for i in range(5)]
+        proj_vals = results["projected_fcfs"]
+        fig_fcf = go.Figure()
+        fig_fcf.add_trace(go.Bar(
+            x=hist_years, y=hist_vals,
+            name="Historical",
+            marker=dict(color=INDIGO, opacity=0.7),
+        ))
+        fig_fcf.add_trace(go.Bar(
+            x=proj_years, y=proj_vals,
+            name="Projected",
+            marker=dict(
+                color=AMBER, opacity=0.75,
+                pattern=dict(shape="/", fgcolor="rgba(251,176,36,0.3)")
+            ),
+        ))
+        fig_fcf.update_layout(**chart_layout(height=300))
+        fig_fcf.update_yaxes(tickformat="$,.0f")
+        st.plotly_chart(fig_fcf, use_container_width=True)
 
 
 # Monte Carlo
 st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
-st.markdown("<div class='section-label'>Monte Carlo simulation</div>", unsafe_allow_html=True)
 
-with st.spinner(f"Running {n_simulations:,} simulations..."):
-    config     = SimulationConfig(n_simulations=n_simulations)
-    simulator  = MonteCarloSimulator(data, config)
-    mc_results = simulator.run()
-    mc_stats   = simulator.get_statistics()
+if valuation_method == "DCF":
+    st.markdown("<div class='section-label'>Monte Carlo simulation</div>", unsafe_allow_html=True)
 
-col_hist, col_mc = st.columns([2, 1])
+    with st.spinner(f"Running {n_simulations:,} simulations..."):
+        config     = SimulationConfig(n_simulations=n_simulations)
+        simulator  = MonteCarloSimulator(data, config)
+        mc_results = simulator.run()
+        mc_stats   = simulator.get_statistics()
 
-with col_hist:
-    fig_mc = go.Figure()
-    fig_mc.add_trace(go.Histogram(
-        x=mc_results["intrinsic_value"],
-        nbinsx=80,
-        name="Simulated values",
-        marker=dict(color=INDIGO, opacity=0.65),
-    ))
-    fig_mc.add_vline(
-        x=overview["current_price"],
-        line=dict(color=RED, width=1.5, dash="dash"),
-        annotation=dict(
-            text=f"Current ${overview['current_price']:.0f}",
-            font=dict(color=RED, size=10),
-            yanchor="top",
+    col_hist, col_mc = st.columns([2, 1])
+
+    with col_hist:
+        fig_mc = go.Figure()
+        fig_mc.add_trace(go.Histogram(
+            x=mc_results["intrinsic_value"],
+            nbinsx=80,
+            name="Simulated values",
+            marker=dict(color=INDIGO, opacity=0.65),
+        ))
+        fig_mc.add_vline(
+            x=overview["current_price"],
+            line=dict(color=RED, width=1.5, dash="dash"),
+            annotation=dict(
+                text=f"Current ${overview['current_price']:.0f}",
+                font=dict(color=RED, size=10),
+                yanchor="top",
+            )
         )
-    )
-    fig_mc.add_vline(
-        x=mc_stats["median"],
-        line=dict(color=TEAL, width=1.5, dash="dot"),
-        annotation=dict(
-            text=f"Median ${mc_stats['median']:.0f}",
-            font=dict(color=TEAL, size=10),
-            yanchor="top",
+        fig_mc.add_vline(
+            x=mc_stats["median"],
+            line=dict(color=TEAL, width=1.5, dash="dot"),
+            annotation=dict(
+                text=f"Median ${mc_stats['median']:.0f}",
+                font=dict(color=TEAL, size=10),
+                yanchor="top",
+            )
         )
-    )
-    fig_mc.update_layout(**chart_layout(height=280, show_legend=False))
-    fig_mc.update_xaxes(tickformat="$,.0f", title_text="Intrinsic value per share",
-                        title_font=dict(size=10, color=MUTED))
-    fig_mc.update_yaxes(title_text="Simulations", title_font=dict(size=10, color=MUTED))
-    st.plotly_chart(fig_mc, use_container_width=True)
+        fig_mc.update_layout(**chart_layout(height=280, show_legend=False))
+        fig_mc.update_xaxes(tickformat="$,.0f", title_text="Intrinsic value per share",
+                            title_font=dict(size=10, color=MUTED))
+        fig_mc.update_yaxes(title_text="Simulations", title_font=dict(size=10, color=MUTED))
+        st.plotly_chart(fig_mc, use_container_width=True)
 
-with col_mc:
-    st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
-    scenarios = {
-        "Bear (10th)":  (mc_stats["p10"],  RED),
-        "Low (25th)":   (mc_stats["p25"],  MUTED),
-        "Base (50th)":  (mc_stats["p50"],  TEXT),
-        "High (75th)":  (mc_stats["p75"],  MUTED),
-        "Bull (90th)":  (mc_stats["p90"],  TEAL),
-    }
-    for label, (val, color) in scenarios.items():
+    with col_mc:
+        st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+        scenarios = {
+            "Bear (10th)":  (mc_stats["p10"],  RED),
+            "Low (25th)":   (mc_stats["p25"],  MUTED),
+            "Base (50th)":  (mc_stats["p50"],  TEXT),
+            "High (75th)":  (mc_stats["p75"],  MUTED),
+            "Bull (90th)":  (mc_stats["p90"],  TEAL),
+        }
+        for label, (val, color) in scenarios.items():
+            st.markdown(f"""
+            <div style='display:flex;justify-content:space-between;align-items:center;
+                        padding:0.55rem 0;border-bottom:1px solid rgba(255,255,255,0.04)'>
+                <span style='font-size:0.68rem;color:#6B7280;letter-spacing:0.05em'>{label}</span>
+                <span style='font-size:0.88rem;font-weight:500;color:{color}'>${val:.2f}</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+        prob = mc_stats["prob_undervalued"] * 100
+        prob_color = TEAL if prob > 50 else RED
         st.markdown(f"""
-        <div style='display:flex;justify-content:space-between;align-items:center;
-                    padding:0.55rem 0;border-bottom:1px solid rgba(255,255,255,0.04)'>
-            <span style='font-size:0.68rem;color:#6B7280;letter-spacing:0.05em'>{label}</span>
-            <span style='font-size:0.88rem;font-weight:500;color:{color}'>${val:.2f}</span>
+        <div style='margin-top:0.85rem;background:#0F1117;border-radius:8px;
+                    padding:0.85rem 1rem;border:1px solid rgba(255,255,255,0.06)'>
+            <div style='font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;
+                        color:#6B7280;margin-bottom:0.4rem'>Probability undervalued</div>
+            <div style='font-size:1.4rem;font-weight:500;color:{prob_color}'>{prob:.1f}%</div>
         </div>
         """, unsafe_allow_html=True)
 
-    prob = mc_stats["prob_undervalued"] * 100
-    prob_color = TEAL if prob > 50 else RED
-    st.markdown(f"""
-    <div style='margin-top:0.85rem;background:#0F1117;border-radius:8px;
-                padding:0.85rem 1rem;border:1px solid rgba(255,255,255,0.06)'>
-        <div style='font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;
-                    color:#6B7280;margin-bottom:0.4rem'>Probability undervalued</div>
-        <div style='font-size:1.4rem;font-weight:500;color:{prob_color}'>{prob:.1f}%</div>
-    </div>
-    """, unsafe_allow_html=True)
+else:
+    if valuation_method == "Residual Income Model":
+        st.markdown("<div class='section-label'>Residual Income Model — Key Metrics</div>",
+                    unsafe_allow_html=True)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Book Value Per Share", f"${results['book_value_per_share']:.2f}")
+        with col2:
+            st.metric("Current ROE", f"{results['current_roe']:.1f}%")
+        with col3:
+            st.metric("Excess Return (ROE minus COE)", f"{results['excess_return']:.1f}%")
+    else:
+        st.markdown("<div class='section-label'>FFO/AFFO Valuation — Key Metrics</div>",
+                    unsafe_allow_html=True)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("FFO Per Share", f"${results['ffo_per_share']:.2f}")
+        with col2:
+            st.metric("AFFO Per Share", f"${results['affo_per_share']:.2f}")
+        with col3:
+            st.metric("Price/FFO", f"{results['price_to_ffo']:.1f}x")
 
 
 # Sensitivity
@@ -554,29 +693,37 @@ st.markdown("<div class='section-label'>Sensitivity analysis — intrinsic value
             unsafe_allow_html=True)
 st.caption("Rows: WACC · Columns: terminal growth rate")
 
-sensitivity = model.sensitivity_analysis()
-current     = overview["current_price"]
+if valuation_method == "DCF":
+    sensitivity = model.sensitivity_analysis()
+    current = overview["current_price"]
 
-def color_cell(val):
-    try:
-        v = float(str(val).replace("$","").replace(",",""))
-        if v > current * 1.1:
-            return "background-color:#0D2B1F;color:#2DD4BF"
-        elif v > current * 0.9:
-            return "background-color:#2A2210;color:#FBB024"
-        else:
-            return "background-color:#1F0E0E;color:#F87171"
-    except:
-        return "color:#6B7280"
+    def color_cell(val):
+        try:
+            v = float(str(val).replace("$", "").replace(",", ""))
+            if v > current * 1.1:
+                return "background-color:#0D2B1F;color:#2DD4BF"
+            elif v > current * 0.9:
+                return "background-color:#2A2210;color:#FBB024"
+            else:
+                return "background-color:#1F0E0E;color:#F87171"
+        except:
+            return "color:#6B7280"
 
-st.dataframe(
-    sensitivity.style.map(color_cell),
-    use_container_width=True,
-    height=300
-)
-st.caption("Teal = above current price  ·  Amber = within 10%  ·  Red = below current price")
+    st.dataframe(
+        sensitivity.style.map(color_cell),
+        use_container_width=True,
+        height=300
+    )
+    st.caption("Teal = above current price  ·  Amber = within 10%  ·  Red = below current price")
+else:
+    st.markdown("""
+    <div style='color:#6B7280; font-size:0.85rem; padding: 1rem 0;'>
+    Sensitivity analysis is not applicable for the Residual Income Model. 
+    Key value drivers are ROE, Cost of Equity, and Book Value per share.
+    </div>
+    """, unsafe_allow_html=True)
 
-from ai_analyst import get_ai_analysis
+
 
 # Initialize session state
 if "ai_summary" not in st.session_state:
@@ -589,11 +736,9 @@ if "last_question" not in st.session_state:
 # AI Financial Analyst section
 st.subheader("AI Financial Analyst")
 
-# Financial institution guardrail
-FINANCIAL_SECTORS = ['Financial Services', 'Banking', 'Insurance', 'Financial']
-is_financial = any(s.lower() in overview.get('sector', '').lower() for s in FINANCIAL_SECTORS)
-
-if is_financial:
+# Show warning only for financial institutions NOT using RIM (shouldn't happen but safety check)
+# REITs and RIM companies get full AI analysis
+if is_financial and valuation_method == "DCF":
     st.warning("""
     **Valuation Limitation Notice**
     
@@ -608,7 +753,7 @@ else:
     if st.button("Generate Executive Summary", key="ai_summary_btn"):
         with st.spinner("Retrieving SEC filing and analyzing valuation..."):
             st.session_state.ai_summary = get_ai_analysis(
-                results, ticker=ticker, user_question=None
+                results, ticker=ticker, user_question=None, valuation_method=valuation_method
             )
 
     if st.session_state.ai_summary:
@@ -624,7 +769,7 @@ if user_question and user_question != st.session_state.last_question:
     st.session_state.last_question = user_question
     with st.spinner("Thinking..."):
         st.session_state.ai_answer = get_ai_analysis(
-            results, ticker=ticker, user_question=user_question
+            results, ticker=ticker, user_question=user_question, valuation_method=valuation_method
         )
 
 if st.session_state.get("ai_answer", ""):

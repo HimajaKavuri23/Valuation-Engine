@@ -1,10 +1,13 @@
 # AI Analyst Module
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import anthropic
 from rag_retriever import get_rag_context
 
 
-def get_ai_analysis(results: dict, ticker: str = None, user_question: str = None) -> str:
+def get_ai_analysis(results: dict, ticker: str = None, user_question: str = None, valuation_method: str = "DCF") -> str:
     client = anthropic.Anthropic()
 
     # RAG retrieval
@@ -28,10 +31,8 @@ def get_ai_analysis(results: dict, ticker: str = None, user_question: str = None
         valuation_signal = f"a {abs(upside):.1f}% downside relative to the current market price under the model's assumptions"
 
     context = f"""
-You are a financial analyst assistant. All numbers below were calculated by Python.
-Do not recalculate or infer any values. Use conditional, precise language throughout.
-Never say a stock "is" overvalued or undervalued. Always say "the DCF model indicates" or "under current assumptions."
-Do not assign subjective confidence labels.
+You are a financial analyst assistant. All numbers below were calculated by Python using the {valuation_method} methodology.
+Do not say "DCF model" if the methodology is Residual Income Model. Use the correct methodology name throughout.
 
 PRE-CALCULATED VALUATION DATA (do not recalculate):
 Intrinsic Value Per Share: {results.get('intrinsic_value', 'N/A')}
